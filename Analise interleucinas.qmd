@@ -1,0 +1,373 @@
+---
+title: "interleucinas"
+output: html_document
+date: "2024-10-14"
+---
+
+Identificar se existe associação do painel de biomarcadores inflamatórios com os componentes de sarcopenia (massa e força muscular).
+
+a hipótese e o resultado esperado são que os níveis séricos dos biomarcadores pro-inflamatórios investigados no presente estudo sejam capazes de predizer a presença de sarcopenia. Espera-se também que os níveis séricos desses biomarcadores ejam preditivos para os componentes da sarcopenia.
+
+```{r echo=FALSE}
+# Carregar pacotes
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(tidyverse)
+library(car)
+library(pROC)
+library(readxl)
+library(ppcor)
+library(psych)
+library(knitr)
+library(kableExtra)
+
+
+# leitura dados
+dados <- read_excel("Dados/DADOS_MESTRADO_ANDREIAPAIN_versão Gabriela.xlsx")
+View(dados)
+
+```
+
+
+# Dados Descritivos
+
+## Dados descritivos iniciais
+```{r}
+
+summary(dados)
+
+biomarcadores <- c("IL-22", "IL-17", "IL-6", "TNF-a", "IL-1b", "IL-8", "IL-27", "IL1RA", "CXCL9")
+biomarcadores_presentes <- intersect(names(dados), biomarcadores)
+
+# Selecionar apenas os biomarcadores presentes e criar o gráfico
+dados_long <- dados[, biomarcadores_presentes] %>%
+  pivot_longer(cols = everything(), names_to = "Biomarcador", values_to = "Nivel")
+
+# Converter 'Nivel' para numérico
+dados_long$Nivel <- as.numeric(dados_long$Nivel)
+
+
+```
+
+## Dados descritivos de IL
+```{r}
+
+# Função para calcular a moda
+calculate_mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Função para identificar outliers usando o IQR
+identify_outliers <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  sum(x < (Q1 - 1.5 * IQR) | x > (Q3 + 1.5 * IQR), na.rm = TRUE)
+}
+
+# Selecionar as colunas dos biomarcadores diretamente
+dados_biomarcadores <- dados[, biomarcadores_presentes]
+
+# Converter as colunas para numéricas
+dados_biomarcadores <- dados_biomarcadores %>%
+  mutate(across(everything(), as.numeric))
+
+# Calcular as estatísticas descritivas
+statistics <- dados_biomarcadores %>%
+  summarise(across(everything(), list(
+    Total = ~sum(!is.na(.)),
+    Média = ~mean(., na.rm = TRUE),
+    Mediana = ~median(., na.rm = TRUE),
+    Moda = ~calculate_mode(.),
+    `Desvio Padrão` = ~sd(., na.rm = TRUE),
+    Outliers = ~identify_outliers(.),
+    `Frequência Relativa` = ~max(table(.)/length(.[!is.na(.)]))
+  )))
+
+# Ajustar a tabela de estatísticas
+statistics <- statistics %>%
+  pivot_longer(cols = everything(), names_to = c("Biomarcador", "Estatística"), names_sep = "_") %>%
+  pivot_wider(names_from = Estatística, values_from = value)
+
+# Exibir a tabela de forma profissional usando kable
+kable(statistics, caption = "Estatísticas Descritivas dos Biomarcadores", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4CAF50")
+
+# Plotar as distribuições dos biomarcadores
+dados_long <- dados_biomarcadores %>%
+  pivot_longer(cols = everything(), names_to = "Biomarcador", values_to = "Nivel")
+
+# Converter 'Nivel' para numérico para o gráfico
+dados_long$Nivel <- as.numeric(dados_long$Nivel)
+
+ggplot(dados_long, aes(x = Nivel)) +
+  geom_histogram(bins = 30) +
+  facet_wrap(~Biomarcador, scales = "free") +
+  theme_minimal() +
+  labs(title = "Distribuição dos Biomarcadores Inflamatórios")
+
+```
+
+## Dados descritivos socioeconomidos e saúde
+```{r}
+
+# Definir as variáveis socioeconômicas e antropométricas presentes
+socio_vars <- c("Sexo", "Idade", "Escolaridade", "Etnia", "Estado Cívil", "Renda", 
+                "N.º Medicamentos", "Altura", "Peso", "IMC", "SMI", "SMI _categoria", 
+                "10CS", "10CS_categoria", "IPAQ", "CES-D", "Perda de Peso\r\nnão intensional",
+                "Dinanometria", "Dinanometria_categoria", "Velocidade da marcha", 
+                "Velocidade da marcha_categoria", "Sarcopenia", "Sarcopenia_ grave")
+
+# Selecionar apenas as variáveis socioeconômicas e antropométricas do conjunto de dados
+dados_socio <- dados[, socio_vars]
+
+# Selecionar apenas colunas numéricas para o cálculo usando sapply para verificar o tipo das colunas
+dados_socio_num <- dados_socio[, sapply(dados_socio, is.numeric)]
+
+# Função para calcular a moda
+calculate_mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Função para identificar outliers usando o IQR
+identify_outliers <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  sum(x < (Q1 - 1.5 * IQR) | x > (Q3 + 1.5 * IQR), na.rm = TRUE)
+}
+
+# Calcular as estatísticas descritivas apenas para colunas numéricas
+socio_statistics <- dados_socio_num %>%
+  summarise(across(everything(), list(
+    Total = ~sum(!is.na(.)),
+    Média = ~mean(., na.rm = TRUE),
+    Mediana = ~median(., na.rm = TRUE),
+    Moda = ~calculate_mode(.),
+    `Desvio Padrão` = ~sd(., na.rm = TRUE),
+    Outliers = ~identify_outliers(.),
+    `Frequência Relativa` = ~max(table(.)/length(.[!is.na(.)]))
+  )))
+
+# Ajustar a tabela de estatísticas
+socio_statistics <- socio_statistics %>%
+  pivot_longer(cols = everything(), names_to = c("Variável", "Estatística"), names_sep = "_") %>%
+  pivot_wider(names_from = Estatística, values_from = value)
+
+# Exibir a tabela de forma profissional usando kable
+kable(socio_statistics, caption = "Estatísticas Descritivas das Variáveis Socioeconômicas e Antropométricas", digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive")) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE, color = "white", background = "#4CAF50")
+
+```
+
+
+
+# Normalidade
+
+```{r}
+
+# Lista de variáveis de interesse
+variaveis_interesse <- c("Etnia", "Estado Cívil", "Renda", "N.º Medicamentos", 
+                         "Altura", "Peso", "IMC", "SMI", "SMI _categoria", 
+                         "10CS", "10CS_categoria", "IPAQ", "OSG", "IL-22", 
+                         "IL-17", "IL-6", "TNF-a", "IL-1b", "IL-8", 
+                         "IL-27", "IL1RA", "CXCL9")
+
+# Converter SMI e variáveis de interesse para numérico
+dados$SMI <- as.numeric(dados$SMI)
+dados <- dados %>% mutate(across(all_of(variaveis_interesse), as.numeric))
+
+# Teste de normalidade, excluindo colunas com menos de 3 valores não NA
+normalidade_resultados <- sapply(dados[variaveis_interesse], function(x) {
+  if(sum(!is.na(x)) >= 3) {
+    shapiro.test(x[!is.na(x)])$p.value
+  } else {
+    NA  # Deixar NA caso não haja valores suficientes
+  }
+})
+
+# Determinar se cada variável é normal ou não normal
+normalidade <- ifelse(normalidade_resultados > 0.05, "normal", "não normal")
+print(normalidade)
+```
+
+
+# Correlação
+
+
+```{r}
+
+# Criar um data frame para armazenar os resultados das correlações com SMI
+correlacoes_smi <- data.frame(Variável = character(), Correlacao = numeric(), p_value = numeric(), stringsAsFactors = FALSE)
+
+# Calcular correlação para cada variável com SMI
+for (variavel in variaveis_interesse) {
+  if (!is.na(normalidade[variavel])) {
+    # Verificar o método de correlação com base na normalidade
+    metodo <- ifelse(normalidade[variavel] == "normal", "pearson", "spearman")
+    # Executar o teste de correlação, suprimindo avisos
+    suppressWarnings({
+      teste <- cor.test(dados[[variavel]], dados$SMI, method = metodo, use = "complete.obs")
+    })
+    # Adicionar resultado na lista
+    correlacoes_smi <- rbind(correlacoes_smi, data.frame(Variável = variavel, Correlacao = teste$estimate, p_value = teste$p.value))
+  }
+}
+
+# Tabela com todas as correlações
+print("Tabela com todas as correlações com SMI:")
+kable(correlacoes_smi, caption = "Todas as Variáveis e suas Correlações com SMI", digits = 3)
+
+# Filtrar as variáveis com p < 0,05 para criar tabela de significativas
+correlacoes_significativas <- correlacoes_smi %>% filter(p_value < 0.05)
+
+# Exibir a tabela de variáveis com correlação significativa com SMI
+print("Variáveis com correlação significativa com SMI (p < 0,05):")
+kable(correlacoes_significativas, caption = "Variáveis com Correlação Significativa com SMI (p < 0,05)", digits = 3)
+
+```
+
+# Testes T de Hipótese (Associação) para Sarcopenia
+```{r}
+# Criar um data frame para armazenar os resultados dos testes t
+resultados_t_test <- data.frame(Variável = character(), Media_Normal = numeric(), Media_Sarcopenia = numeric(), 
+                                p_value = numeric(), stringsAsFactors = FALSE)
+
+# Executar o teste t para cada variável de interesse
+for (variavel in variaveis_interesse) {
+  if (!is.na(normalidade[variavel])) {
+    # Ajustar para que 0 = "normal" e 1 = "sarcopenia"
+    dados_filtrados <- dados %>%
+      mutate(SMI_categoria = factor(`SMI _categoria`, levels = c(0, 1), labels = c("normal", "sarcopenia")))
+    
+    # Verificar se as variâncias em ambos os grupos são diferentes de zero
+    variancia_normal <- var(dados[[variavel]][dados_filtrados$SMI_categoria == "normal"], na.rm = TRUE)
+    variancia_sarcopenia <- var(dados[[variavel]][dados_filtrados$SMI_categoria == "sarcopenia"], na.rm = TRUE)
+    
+    # Somente rodar o teste t se ambas as variâncias forem diferentes de zero
+    if (variancia_normal > 0 & variancia_sarcopenia > 0) {
+      # Executar o teste t, suprimindo avisos
+      suppressWarnings({
+        t_test <- t.test(dados[[variavel]] ~ dados_filtrados$SMI_categoria)
+      })
+      
+      # Calcular as médias para cada grupo
+      medias <- tapply(dados[[variavel]], dados_filtrados$SMI_categoria, mean, na.rm = TRUE)
+      
+      # Adicionar os resultados ao data frame
+      resultados_t_test <- rbind(resultados_t_test, data.frame(Variável = variavel, 
+                                                              Media_Normal = medias["normal"], 
+                                                              Media_Sarcopenia = medias["sarcopenia"], 
+                                                              p_value = t_test$p.value))
+    } else {
+      # Aviso para variáveis com variância constante
+      print(paste("Variável", variavel, "tem variância constante em um dos grupos e foi excluída do teste t."))
+    }
+  }
+}
+
+# Exibir a tabela de resultados do teste t
+print("Tabela com resultados do Teste t entre Grupos (Sarcopenia/Normal):")
+kable(resultados_t_test, caption = "Resultados do Teste t para Variáveis Contínuas por SMI", digits = 3)
+
+```
+# Modelos de Regressão
+
+
+```{r}
+
+# Definir as variáveis categóricas com base nos nomes reais das colunas
+variaveis_categoricas <- c("coluna_real1", "coluna_real2", "coluna_real3")  # Substitua pelos nomes corretos
+
+# Criar um data frame para armazenar os resultados do teste qui-quadrado
+resultados_chisq_test <- data.frame(Variável = character(), p_value = numeric(), stringsAsFactors = FALSE)
+
+# Executar o teste qui-quadrado para cada variável categórica de interesse
+for (variavel in variaveis_categoricas) {
+  # Verificar se a variável existe no conjunto de dados antes de continuar
+  if (variavel %in% colnames(dados)) {
+    # Remover linhas com valores ausentes em SMI ou na variável categórica
+    dados_filtrados <- dados %>% 
+      filter(!is.na(SMI), !is.na(dados[[variavel]]))  # Filtrando valores ausentes
+
+    # Criar uma tabela de contingência entre SMI e a variável categórica
+    tab <- table(dados_filtrados$SMI, dados_filtrados[[variavel]])
+
+    # Executar o teste qui-quadrado, suprimindo avisos
+    suppressWarnings({
+      chisq_test <- chisq.test(tab)
+    })
+
+    # Adicionar os resultados ao data frame
+    resultados_chisq_test <- rbind(resultados_chisq_test, data.frame(Variável = variavel, p_value = chisq_test$p.value))
+  } else {
+    message(paste("A coluna", variavel, "não existe no conjunto de dados."))
+  }
+}
+
+# Exibir os resultados do teste qui-quadrado
+print("Resultados do Teste Qui-Quadrado:")
+print(resultados_chisq_test)
+
+
+
+```
+
+
+
+# Modelos de Regressão
+
+
+```{r}
+
+# Regressão Linear para Biomarcadores x Componentes de Sarcopenia
+modelo_linear <- lm(Peso ~ `IL-6` + `IL-17` + `IL-8` + Idade + Sexo, data = dados)
+summary(modelo_linear)
+
+# Regressão Logística para predição de sarcopenia
+modelo_logistico <- glm(`SMI _categoria` ~ `IL-6` + `IL-17` + `IL-8`+ Idade + Sexo, data = dados, family = binomial)
+summary(modelo_logistico)
+
+```
+
+# Análise de Capacidade Preditiva
+
+```{r}
+
+# Substitua "IL-6" pelo nome exato da coluna encontrado
+roc_obj <- roc(dados$SMI, dados$`IL-6`, plot = TRUE, col = "blue")
+print(roc_obj)
+
+
+# Sensibilidade e Especificidade para o biomarcador IL-6
+coords <- coords(roc_obj, "best", ret = c("threshold", "sensitivity", "specificity"))
+print(coords)
+
+```
+# Análises Complementares
+
+```{r}
+
+# Análise de Componentes Principais (PCA)
+dados_pca <- dados %>% select(all_of(biomarcadores)) %>% na.omit()
+pca <- prcomp(dados_pca, scale = TRUE)
+summary(pca)
+
+# Scree plot para visualização da variabilidade explicada pelos componentes
+plot(pca, type = "lines")
+
+# Visualização dos scores do PCA
+pca_scores <- as.data.frame(pca$x)
+pca_scores$Sarcopenia <- dados$SMI
+ggplot(pca_scores, aes(PC1, PC2, color = factor(Sarcopenia))) +
+  geom_point() +
+  labs(title = "PCA dos Biomarcadores", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
